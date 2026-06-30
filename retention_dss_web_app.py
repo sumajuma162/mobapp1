@@ -970,11 +970,12 @@ def get_factor_action_bank():
     }
 
 
-def create_dynamic_retention_recommendation(row, causes, arm_rule):
+def create_dynamic_retention_recommendation(row, causes):
     """
-    Create less predictable, more personalized recommendations.
-    The text changes based on risk probability, main factor, secondary factor, number of causes,
-    customer segment signals, and the matching ARM rule.
+    Create less predictable, more personalized recommendations using risk factors only.
+    Association Rule Mining is intentionally not used for making retention decisions.
+    The text changes based on risk probability, main factor, secondary factor,
+    number of causes, and customer segment signals.
     """
     customer_id = str(row.get("CUSTOMER_ID", "CUSTOMER"))
     risk_probability = float(row.get("Risk_Prob", 0))
@@ -1033,14 +1034,6 @@ def create_dynamic_retention_recommendation(row, causes, arm_rule):
         f"Use the segment signal ({', '.join(segment_notes)}) to choose the correct tone and package size.",
     ], customer_id, *segment_notes)
 
-    arm_clause = ""
-    if arm_rule:
-        arm_clause = stable_choice([
-            "The ARM rule supports this priority, so the action should target the rule pattern rather than giving a random offer.",
-            "Since the ARM pattern links these conditions with high risk, the retention plan should directly break that pattern.",
-            "Use the ARM rule as evidence for why this customer should receive a targeted intervention.",
-        ], customer_id, arm_rule)
-
     closing_clause = stable_choice([
         f"Act {urgency['timeframe']}, then {urgency['follow_up']}.",
         f"This is a {urgency['level'].lower()} risk case; complete the first contact {urgency['timeframe']} and {urgency['follow_up']}.",
@@ -1050,7 +1043,7 @@ def create_dynamic_retention_recommendation(row, causes, arm_rule):
     recommendation = (
         f"{urgency['level']} risk customer ({risk_probability:.2%}). Main retention driver: {main_label}. "
         f"Recommended action: {primary_action}. {secondary_clause} {multi_factor_clause} "
-        f"{segment_clause} {arm_clause} {closing_clause}"
+        f"{segment_clause} {closing_clause}"
     )
 
     return recommendation
@@ -1093,7 +1086,7 @@ def build_high_risk_customer_report(final_data, model):
             recommendation = None
 
         arm_rule = get_matching_arm_rule(cause_labels, most_important_label, arm_rules_df)
-        recommendation = create_dynamic_retention_recommendation(row, causes, arm_rule)
+        recommendation = create_dynamic_retention_recommendation(row, causes)
 
         rows.append(
             {
@@ -1648,7 +1641,7 @@ elif page == "Risk Prediction & Simulation":
             st.markdown("### Ordered High-Risk Customer Retention Report")
             st.caption(
                 "Customers are ordered by highest risk probability. Recommendation is based on the most important factor. "
-                "The ARM rule is placed in the last column."
+                "The ARM rule is displayed in the last column for separate analysis only; it is not used to make the retention recommendation."
             )
 
             if st.session_state.high_risk_customer_report_df is not None and not st.session_state.high_risk_customer_report_df.empty:
@@ -1784,7 +1777,7 @@ elif page == "About System":
         - Simulate retention interventions across several iterations.
         - Explain how customer risk changes after each intervention.
         - Produce an ordered high-risk customer retention report.
-        - Show risk causes, most important factor, factor-based retention recommendation, and ARM rule.
+        - Show risk causes, most important factor, factor-based retention recommendation, and ARM rule as a separate analytical output.
         - Display tables and charts.
         - Export CSV, Excel, PNG chart, and ZIP reports.
 

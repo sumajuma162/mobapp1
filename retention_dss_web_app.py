@@ -37,7 +37,7 @@ warnings.filterwarnings("ignore")
 # ==========================================================
 st.set_page_config(
     page_title="Customer Retention DSS",
-    page_icon="📊",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -622,7 +622,7 @@ initialize_session_state()
 # ==========================================================
 # SIDEBAR
 # ==========================================================
-st.sidebar.title("📊 Retention DSS")
+st.sidebar.title(" Retention DSS")
 st.sidebar.caption("Machine Learning Decision Support System")
 
 page = st.sidebar.radio(

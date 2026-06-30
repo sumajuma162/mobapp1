@@ -10,6 +10,7 @@ import zipfile
 import warnings
 from datetime import datetime
 from itertools import combinations
+import importlib.util
 
 import numpy as np
 import pandas as pd
@@ -1000,9 +1001,28 @@ def dataframe_to_csv_bytes(df):
     return df.to_csv(index=False).encode("utf-8")
 
 
+def get_available_excel_engine():
+    """
+    Return an installed Excel writer engine.
+    Streamlit Cloud will crash if the selected engine is not listed in requirements.txt,
+    so this function checks availability before Pandas tries to import the engine.
+    """
+    if importlib.util.find_spec("xlsxwriter") is not None:
+        return "xlsxwriter"
+    if importlib.util.find_spec("openpyxl") is not None:
+        return "openpyxl"
+    return None
+
+
 def create_excel_report():
+    excel_engine = get_available_excel_engine()
+
+    # If no Excel writer package is installed, return None instead of crashing the whole app.
+    if excel_engine is None:
+        return None
+
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+    with pd.ExcelWriter(output, engine=excel_engine) as writer:
         if st.session_state.results_df is not None:
             st.session_state.results_df.to_excel(writer, sheet_name="Model Performance", index=False)
         if st.session_state.iteration_df is not None:
@@ -1040,7 +1060,14 @@ def create_zip_outputs():
             zf.writestr("association_rule_mining_rules.csv", st.session_state.arm_rules_df.to_csv(index=False))
 
         excel_file = create_excel_report()
-        zf.writestr("DSS_Explainable_Report.xlsx", excel_file.getvalue())
+        if excel_file is not None:
+            zf.writestr("DSS_Explainable_Report.xlsx", excel_file.getvalue())
+        else:
+            zf.writestr(
+                "EXCEL_EXPORT_NOT_CREATED.txt",
+                "Excel export was not created because neither xlsxwriter nor openpyxl is installed. "
+                "Add xlsxwriter or openpyxl to requirements.txt, then redeploy the app."
+            )
 
         if st.session_state.iteration_df is not None:
             fig = make_high_risk_chart(st.session_state.iteration_df)
@@ -1449,12 +1476,19 @@ elif page == "Reports & Downloads":
                 )
 
             excel_output = create_excel_report()
-            st.download_button(
-                "Download Excel Report",
-                data=excel_output,
-                file_name="DSS_Explainable_Report.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+            if excel_output is not None:
+                st.download_button(
+                    "Download Excel Report",
+                    data=excel_output,
+                    file_name="DSS_Explainable_Report.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            else:
+                st.warning(
+                    "Excel export is unavailable because neither xlsxwriter nor openpyxl is installed. "
+                    "Add xlsxwriter or openpyxl to requirements.txt, then redeploy the app. "
+                    "CSV and ZIP outputs are still available."
+                )
 
             zip_output = create_zip_outputs()
             st.download_button(

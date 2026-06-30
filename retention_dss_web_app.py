@@ -1,3 +1,4 @@
+ 
 # ==========================================================
 # CUSTOMER RETENTION DECISION SUPPORT SYSTEM (WEB-BASED)
 # Streamlit + Machine Learning + Closed-Loop DSS Simulation
@@ -8,6 +9,7 @@ import time
 import zipfile
 import warnings
 from datetime import datetime
+from itertools import combinations
 
 import numpy as np
 import pandas as pd
@@ -124,6 +126,165 @@ FEATURE_COLUMNS = [
     "LOAN_BOARD_CLASS",
 ]
 
+CUSTOMER_ID_CANDIDATES = [
+    "CUSTOMER_ID",
+    "CUSTOMER_NAME",
+    "CUSTOMER",
+    "CUSTOMER_NO",
+    "CLIENT_ID",
+    "ACCOUNT_NUMBER",
+    "PHONE_NUMBER",
+    "MSISDN",
+]
+
+# Risk factor configuration used for explainable high-risk reporting.
+# risk_when="high" means high values increase risk. risk_when="low" means low values increase risk.
+RISK_FACTOR_CONFIG = {
+    "HIGH_SWITCHING_ENERGY_TIME": {
+        "label": "High switching energy time",
+        "risk_when": "high",
+        "threshold": 0.5,
+        "recommendation": (
+            "Retain this customer by reducing the effort and time required to stay satisfied: "
+            "assign fast support, simplify service processes, provide guided assistance, and show clear benefits of remaining."
+        ),
+    },
+    "HIGH_SWITCHING_COST": {
+        "label": "High switching cost",
+        "risk_when": "high",
+        "threshold": 0.5,
+        "recommendation": (
+            "Use a loyalty-based retention offer such as renewal rewards, contract benefits, bonus services, "
+            "or personalized incentives that make staying more valuable than leaving."
+        ),
+    },
+    "VALUE_FOR_MONEY": {
+        "label": "Value for money concern",
+        "risk_when": "low",
+        "threshold": 0.5,
+        "recommendation": (
+            "Improve perceived value for money using a targeted discount, better bundle, bonus data/minutes, "
+            "or a package that matches the customer's usage pattern."
+        ),
+    },
+    "WIDE_COVERAGE": {
+        "label": "Coverage concern",
+        "risk_when": "low",
+        "threshold": 0.5,
+        "recommendation": (
+            "Retain the customer by addressing coverage concerns: verify network availability in their area, "
+            "escalate weak coverage zones, and offer a suitable coverage-support solution."
+        ),
+    },
+    "CALL_DROPS": {
+        "label": "Call drops",
+        "risk_when": "high",
+        "threshold": 0.5,
+        "recommendation": (
+            "Prioritize technical network support, investigate dropped-call locations, escalate quality issues, "
+            "and follow up after resolution."
+        ),
+    },
+    "STRONG_SIGNALS": {
+        "label": "Weak signal concern",
+        "risk_when": "low",
+        "threshold": 0.5,
+        "recommendation": (
+            "Retain the customer by improving signal experience: troubleshoot device/network settings, "
+            "recommend stronger coverage options, and escalate persistent weak-signal areas."
+        ),
+    },
+    "PROBLEM_SOLVING": {
+        "label": "Poor problem solving",
+        "risk_when": "low",
+        "threshold": 0.5,
+        "recommendation": (
+            "Assign a dedicated support agent, resolve the customer's main problem quickly, and confirm satisfaction "
+            "after the issue is closed."
+        ),
+    },
+    "EXCEPTIONAL_SERVICE_EXPERIENCE": {
+        "label": "Poor service experience",
+        "risk_when": "low",
+        "threshold": 0.5,
+        "recommendation": (
+            "Improve customer experience through priority handling, apology/recovery action, and personalized follow-up "
+            "to rebuild trust."
+        ),
+    },
+    "GET_THROUGH": {
+        "label": "Difficulty getting through",
+        "risk_when": "low",
+        "threshold": 0.5,
+        "recommendation": (
+            "Provide easier access to support channels, call-back service, WhatsApp/chat support, or a priority contact route."
+        ),
+    },
+    "DO_WHAT_THEY_SAY": {
+        "label": "Promise fulfilment concern",
+        "risk_when": "low",
+        "threshold": 0.5,
+        "recommendation": (
+            "Retain the customer by keeping service promises: document commitments, give realistic resolution times, "
+            "and follow up until the promise is fulfilled."
+        ),
+    },
+    "TIMELY_EFFECTIVE_COMPLAINTS": {
+        "label": "Slow or ineffective complaints handling",
+        "risk_when": "low",
+        "threshold": 0.5,
+        "recommendation": (
+            "Escalate complaint resolution, shorten turnaround time, provide status updates, and close the loop with the customer."
+        ),
+    },
+    "FREE_COMPLAINTS": {
+        "label": "Free complaints concern",
+        "risk_when": "low",
+        "threshold": 0.5,
+        "recommendation": (
+            "Retain the customer by making complaint channels easy and free to use, removing complaint barriers, "
+            "and giving a clear complaint-tracking path."
+        ),
+    },
+    "TENURE_CLASS": {
+        "label": "Low tenure concern",
+        "risk_when": "low",
+        "threshold": 0.5,
+        "recommendation": (
+            "Use onboarding retention actions: welcome support, early-life check-ins, education on benefits, "
+            "and first-month loyalty incentives."
+        ),
+    },
+    "EARNINGS_CLASS": {
+        "label": "Price sensitivity concern",
+        "risk_when": "low",
+        "threshold": 0.5,
+        "recommendation": (
+            "Offer an affordable plan, flexible package, or usage-based bundle that matches the customer's financial capacity."
+        ),
+    },
+    "LOAN_BOARD_CLASS": {
+        "label": "Loan board class concern",
+        "risk_when": "high",
+        "threshold": 0.5,
+        "recommendation": (
+            "Use targeted student/customer-segment support, affordable packages, and payment-friendly retention options."
+        ),
+    },
+}
+
+HIGH_RISK_REPORT_COLUMNS = [
+    "Rank",
+    "Customer_ID",
+    "Risk_Probability",
+    "Risk_Category",
+    "High_Risk_Causes",
+    "Most_Important_Factor",
+    "Retention_Recommendation",
+    "ARM_Rule",
+]
+
+
 # ==========================================================
 # HELPER FUNCTIONS
 # ==========================================================
@@ -140,6 +301,8 @@ def initialize_session_state():
         "classification_report_df": None,
         "confusion_matrix_df": None,
         "risk_summary_df": None,
+        "high_risk_customer_report_df": None,
+        "arm_rules_df": None,
         "seed_used": None,
         "pattern_type": None,
     }
@@ -209,6 +372,7 @@ def generate_synthetic_data(n_rows=2000, seed=None, pattern_type="Random"):
     score += rng.normal(0, 1.5, n_rows)
     probability = 1 / (1 + np.exp(-score))
     df["CLASS"] = (probability > 0.55).astype(int)
+    df.insert(0, "CUSTOMER_ID", [f"CUST-{i + 1:05d}" for i in range(n_rows)])
 
     return df, seed, pattern_type
 
@@ -220,8 +384,9 @@ def prepare_uploaded_data(df):
     This version solves common upload problems:
     1. Cleans column names by removing spaces.
     2. Converts column names to uppercase.
-    3. Accepts common target names such as CHURN, churn, TARGET, STATUS, and RETENTION_STATUS.
+    3. Accepts common target names such as CHURN, TARGET, STATUS, and RETENTION_STATUS.
     4. Automatically creates missing feature columns with default value 0.
+    5. Preserves or generates CUSTOMER_ID so high-risk customers can appear clearly in reports.
     """
     prepared_df = df.copy()
 
@@ -266,6 +431,19 @@ def prepare_uploaded_data(df):
     if target_column != "CLASS":
         prepared_df = prepared_df.rename(columns={target_column: "CLASS"})
 
+    # Preserve or generate a clear customer identifier for high-risk reporting
+    if "CUSTOMER_ID" not in prepared_df.columns:
+        source_identifier = None
+        for col in CUSTOMER_ID_CANDIDATES:
+            if col in prepared_df.columns and col != "CUSTOMER_ID":
+                source_identifier = col
+                break
+
+        if source_identifier is not None:
+            prepared_df["CUSTOMER_ID"] = prepared_df[source_identifier].astype(str)
+        else:
+            prepared_df["CUSTOMER_ID"] = [f"CUST-{i + 1:05d}" for i in range(len(prepared_df))]
+
     missing_features = []
 
     # Add missing feature columns automatically
@@ -274,8 +452,8 @@ def prepare_uploaded_data(df):
             prepared_df[col] = 0
             missing_features.append(col)
 
-    # Keep required columns only, in correct order
-    prepared_df = prepared_df[FEATURE_COLUMNS + ["CLASS"]]
+    # Keep customer identifier, required features, and target in correct order
+    prepared_df = prepared_df[["CUSTOMER_ID"] + FEATURE_COLUMNS + ["CLASS"]]
 
     # Convert feature columns to numeric values
     for col in FEATURE_COLUMNS:
@@ -432,13 +610,264 @@ def train_and_evaluate_models(df, test_size=0.3, seed=42):
     return results_df, best_model_name, best_model, scaler, report_df, cm_df
 
 
-def recalc_risk(df, model, scaler):
+def ensure_customer_identifier(df):
     working_df = df.copy()
+
+    if "CUSTOMER_ID" not in working_df.columns:
+        working_df.insert(0, "CUSTOMER_ID", [f"CUST-{i + 1:05d}" for i in range(len(working_df))])
+    else:
+        working_df["CUSTOMER_ID"] = working_df["CUSTOMER_ID"].astype(str)
+
+    return working_df
+
+
+def recalc_risk(df, model, scaler):
+    working_df = ensure_customer_identifier(df)
     X_scaled = scaler.transform(working_df[FEATURE_COLUMNS])
     working_df["Risk_Prob"] = model.predict_proba(X_scaled)[:, 1]
     working_df["Prediction"] = model.predict(X_scaled)
     working_df["Risk_Level"] = working_df["Risk_Prob"].apply(risk_level)
     return working_df
+
+
+def get_model_feature_importance(model):
+    if hasattr(model, "feature_importances_"):
+        importance = np.array(model.feature_importances_, dtype=float)
+    elif hasattr(model, "coef_"):
+        importance = np.abs(np.array(model.coef_).reshape(-1))
+    else:
+        importance = np.ones(len(FEATURE_COLUMNS), dtype=float)
+
+    if importance.size != len(FEATURE_COLUMNS):
+        importance = np.ones(len(FEATURE_COLUMNS), dtype=float)
+
+    if np.nanmax(importance) > 0:
+        importance = importance / np.nanmax(importance)
+
+    return pd.Series(importance, index=FEATURE_COLUMNS).fillna(0)
+
+
+def is_feature_risk_active(feature, value):
+    config = RISK_FACTOR_CONFIG.get(feature)
+    if config is None:
+        return False
+
+    threshold = float(config.get("threshold", 0.5))
+    risk_when = config.get("risk_when", "high")
+
+    try:
+        numeric_value = float(value)
+    except Exception:
+        numeric_value = 0.0
+
+    if risk_when == "high":
+        return numeric_value >= threshold
+
+    return numeric_value <= threshold
+
+
+def get_customer_risk_causes(row, feature_importance):
+    causes = []
+
+    for feature, config in RISK_FACTOR_CONFIG.items():
+        if feature in row.index and is_feature_risk_active(feature, row[feature]):
+            causes.append(
+                {
+                    "feature": feature,
+                    "label": config["label"],
+                    "importance": float(feature_importance.get(feature, 0)),
+                }
+            )
+
+    causes = sorted(causes, key=lambda item: item["importance"], reverse=True)
+    return causes
+
+
+def build_risk_transaction_matrix(df):
+    transaction_matrix = pd.DataFrame(index=df.index)
+
+    for feature, config in RISK_FACTOR_CONFIG.items():
+        label = config["label"]
+
+        if feature not in df.columns:
+            transaction_matrix[label] = False
+            continue
+
+        threshold = float(config.get("threshold", 0.5))
+        values = pd.to_numeric(df[feature], errors="coerce").fillna(0)
+
+        if config.get("risk_when", "high") == "high":
+            transaction_matrix[label] = values >= threshold
+        else:
+            transaction_matrix[label] = values <= threshold
+
+    return transaction_matrix
+
+
+def generate_arm_rules(df, min_support=0.02, min_confidence=0.50, max_antecedents=3):
+    """
+    Generate simple Association Rule Mining outputs without requiring extra libraries.
+    Rule format: IF risk factor(s) THEN HIGH RISK.
+    """
+    if df is None or df.empty or "Risk_Level" not in df.columns:
+        return pd.DataFrame(columns=["Antecedents", "Consequent", "Support", "Confidence", "Lift", "ARM_Rule"])
+
+    working_df = df.copy()
+    total_records = len(working_df)
+
+    if total_records == 0:
+        return pd.DataFrame(columns=["Antecedents", "Consequent", "Support", "Confidence", "Lift", "ARM_Rule"])
+
+    transaction_matrix = build_risk_transaction_matrix(working_df)
+    labels = list(transaction_matrix.columns)
+    high_risk_mask = working_df["Risk_Level"].eq("HIGH RISK")
+    high_risk_rate = high_risk_mask.mean()
+
+    if high_risk_rate == 0:
+        return pd.DataFrame(columns=["Antecedents", "Consequent", "Support", "Confidence", "Lift", "ARM_Rule"])
+
+    min_count = max(2, int(np.ceil(total_records * min_support)))
+    rules = []
+
+    for antecedent_size in range(1, max_antecedents + 1):
+        for antecedents in combinations(labels, antecedent_size):
+            antecedent_mask = transaction_matrix[list(antecedents)].all(axis=1)
+            antecedent_count = int(antecedent_mask.sum())
+
+            if antecedent_count < min_count:
+                continue
+
+            rule_count = int((antecedent_mask & high_risk_mask).sum())
+            if rule_count == 0:
+                continue
+
+            support = rule_count / total_records
+            confidence = rule_count / antecedent_count
+            lift = confidence / high_risk_rate if high_risk_rate > 0 else 0
+
+            if support < min_support or confidence < min_confidence:
+                continue
+
+            antecedent_text = " + ".join(antecedents)
+            arm_rule = (
+                f"IF {antecedent_text} THEN HIGH RISK "
+                f"(support={support:.2f}, confidence={confidence:.2f}, lift={lift:.2f})"
+            )
+
+            rules.append(
+                {
+                    "Antecedents_List": list(antecedents),
+                    "Antecedents": antecedent_text,
+                    "Consequent": "HIGH RISK",
+                    "Support": round(support, 4),
+                    "Confidence": round(confidence, 4),
+                    "Lift": round(lift, 4),
+                    "ARM_Rule": arm_rule,
+                }
+            )
+
+    if not rules:
+        return pd.DataFrame(columns=["Antecedents", "Consequent", "Support", "Confidence", "Lift", "ARM_Rule"])
+
+    rules_df = pd.DataFrame(rules)
+    rules_df = rules_df.sort_values(
+        by=["Confidence", "Lift", "Support"],
+        ascending=[False, False, False],
+    ).reset_index(drop=True)
+
+    return rules_df.head(100)
+
+
+def get_matching_arm_rule(cause_labels, main_factor_label, arm_rules_df):
+    if arm_rules_df is None or arm_rules_df.empty:
+        return f"IF {main_factor_label} THEN HIGH RISK"
+
+    cause_set = set(cause_labels)
+
+    # Prefer rules that include the most important factor and are fully supported by this customer's causes.
+    for _, rule in arm_rules_df.iterrows():
+        antecedents = rule.get("Antecedents_List", [])
+        if isinstance(antecedents, str):
+            antecedents = [item.strip() for item in antecedents.split("+")]
+
+        antecedent_set = set(antecedents)
+        if antecedent_set.issubset(cause_set) and main_factor_label in antecedent_set:
+            return rule["ARM_Rule"]
+
+    # Otherwise use the strongest matching rule supported by this customer's causes.
+    for _, rule in arm_rules_df.iterrows():
+        antecedents = rule.get("Antecedents_List", [])
+        if isinstance(antecedents, str):
+            antecedents = [item.strip() for item in antecedents.split("+")]
+
+        if set(antecedents).issubset(cause_set):
+            return rule["ARM_Rule"]
+
+    return f"IF {main_factor_label} THEN HIGH RISK"
+
+
+def build_high_risk_customer_report(final_data, model):
+    """
+    Build the ordered high-risk customer report requested by the user:
+    customer list, causes, most important factor, retention recommendation, and ARM rule in the last column.
+    """
+    if final_data is None or final_data.empty:
+        empty_report = pd.DataFrame(columns=HIGH_RISK_REPORT_COLUMNS)
+        empty_rules = pd.DataFrame(columns=["Antecedents", "Consequent", "Support", "Confidence", "Lift", "ARM_Rule"])
+        return empty_report, empty_rules
+
+    working_df = ensure_customer_identifier(final_data)
+    arm_rules_df = generate_arm_rules(working_df)
+    feature_importance = get_model_feature_importance(model)
+
+    high_risk_df = (
+        working_df[working_df["Risk_Level"].eq("HIGH RISK")]
+        .copy()
+        .sort_values(by="Risk_Prob", ascending=False)
+        .reset_index(drop=True)
+    )
+
+    rows = []
+
+    for index, row in high_risk_df.iterrows():
+        causes = get_customer_risk_causes(row, feature_importance)
+
+        if causes:
+            cause_labels = [cause["label"] for cause in causes]
+            most_important = causes[0]
+            most_important_label = most_important["label"]
+            recommendation = RISK_FACTOR_CONFIG[most_important["feature"]]["recommendation"]
+        else:
+            cause_labels = ["Combined model signals"]
+            most_important_label = "Combined model signals"
+            recommendation = (
+                "Use a personalized retention call, review the customer profile manually, "
+                "identify the strongest dissatisfaction area, and offer a targeted retention package."
+            )
+
+        arm_rule = get_matching_arm_rule(cause_labels, most_important_label, arm_rules_df)
+
+        rows.append(
+            {
+                "Rank": index + 1,
+                "Customer_ID": row["CUSTOMER_ID"],
+                "Risk_Probability": round(float(row["Risk_Prob"]), 4),
+                "Risk_Category": row["Risk_Level"],
+                "High_Risk_Causes": "; ".join(cause_labels),
+                "Most_Important_Factor": most_important_label,
+                "Retention_Recommendation": recommendation,
+                "ARM_Rule": arm_rule,
+            }
+        )
+
+    report_df = pd.DataFrame(rows, columns=HIGH_RISK_REPORT_COLUMNS)
+
+    if not arm_rules_df.empty and "Antecedents_List" in arm_rules_df.columns:
+        export_rules_df = arm_rules_df.drop(columns=["Antecedents_List"])
+    else:
+        export_rules_df = arm_rules_df.copy()
+
+    return report_df, export_rules_df
 
 
 def explain_iteration(iteration, before, after):
@@ -481,6 +910,7 @@ def run_closed_loop_simulation(model, scaler, n_customers=500, iterations=10, se
         rng.integers(0, 2, size=(n_customers, len(FEATURE_COLUMNS))),
         columns=FEATURE_COLUMNS,
     ).astype(float)
+    new_data.insert(0, "CUSTOMER_ID", [f"CUST-{i + 1:05d}" for i in range(n_customers)])
 
     current_data = recalc_risk(new_data, model, scaler)
     iteration_results = []
@@ -508,6 +938,7 @@ def run_closed_loop_simulation(model, scaler, n_customers=500, iterations=10, se
                     [0, 1], size=low_mask.sum(), p=[0.3, 0.7]
                 )
 
+        editable_features.insert(0, "CUSTOMER_ID", current_data["CUSTOMER_ID"].values)
         current_data = recalc_risk(editable_features, model, scaler)
         after = current_data.copy()
 
@@ -580,6 +1011,10 @@ def create_excel_report():
             st.session_state.explanation_df.to_excel(writer, sheet_name="Explanations", index=False)
         if st.session_state.final_data is not None:
             st.session_state.final_data.to_excel(writer, sheet_name="Final Data", index=False)
+        if st.session_state.high_risk_customer_report_df is not None:
+            st.session_state.high_risk_customer_report_df.to_excel(writer, sheet_name="High Risk Customers", index=False)
+        if st.session_state.arm_rules_df is not None:
+            st.session_state.arm_rules_df.to_excel(writer, sheet_name="ARM Rules", index=False)
         if st.session_state.classification_report_df is not None:
             st.session_state.classification_report_df.to_excel(writer, sheet_name="Classification Report", index=False)
         if st.session_state.confusion_matrix_df is not None:
@@ -599,6 +1034,10 @@ def create_zip_outputs():
             zf.writestr("iteration_explanations.csv", st.session_state.explanation_df.to_csv(index=False))
         if st.session_state.final_data is not None:
             zf.writestr("final_customer_risk_data.csv", st.session_state.final_data.to_csv(index=False))
+        if st.session_state.high_risk_customer_report_df is not None:
+            zf.writestr("high_risk_customer_retention_report.csv", st.session_state.high_risk_customer_report_df.to_csv(index=False))
+        if st.session_state.arm_rules_df is not None:
+            zf.writestr("association_rule_mining_rules.csv", st.session_state.arm_rules_df.to_csv(index=False))
 
         excel_file = create_excel_report()
         zf.writestr("DSS_Explainable_Report.xlsx", excel_file.getvalue())
@@ -622,7 +1061,7 @@ initialize_session_state()
 # ==========================================================
 # SIDEBAR
 # ==========================================================
-st.sidebar.title(" Retention DSS")
+st.sidebar.title("📊 Retention DSS")
 st.sidebar.caption("Machine Learning Decision Support System")
 
 page = st.sidebar.radio(
@@ -778,6 +1217,8 @@ elif page == "Data Source":
                     st.session_state.classification_report_df = None
                     st.session_state.confusion_matrix_df = None
                     st.session_state.risk_summary_df = None
+                    st.session_state.high_risk_customer_report_df = None
+                    st.session_state.arm_rules_df = None
 
                     st.success(message)
                     st.info("Your uploaded file has been prepared for training. Open the Train Models page and click Train Models.")
@@ -895,10 +1336,17 @@ elif page == "Risk Prediction & Simulation":
                     seed=int(simulation_seed),
                 )
 
+                high_risk_report_df, arm_rules_df = build_high_risk_customer_report(
+                    final_data,
+                    st.session_state.best_model,
+                )
+
                 st.session_state.iteration_df = iteration_df
                 st.session_state.explanation_df = explanation_df
                 st.session_state.final_data = final_data
                 st.session_state.risk_summary_df = risk_summary_df
+                st.session_state.high_risk_customer_report_df = high_risk_report_df
+                st.session_state.arm_rules_df = arm_rules_df
 
             st.success("Simulation completed successfully.")
 
@@ -922,6 +1370,21 @@ elif page == "Risk Prediction & Simulation":
 
             st.markdown("### Final Customer Risk Data")
             st.dataframe(st.session_state.final_data.head(100), use_container_width=True)
+
+            st.markdown("### Ordered High-Risk Customer Retention Report")
+            st.caption(
+                "Customers are ordered by highest risk probability. Recommendation is based on the most important factor. "
+                "The ARM rule is placed in the last column."
+            )
+
+            if st.session_state.high_risk_customer_report_df is not None and not st.session_state.high_risk_customer_report_df.empty:
+                st.dataframe(st.session_state.high_risk_customer_report_df, use_container_width=True)
+            else:
+                st.info("No HIGH RISK customers were found in the final simulation output.")
+
+            if st.session_state.arm_rules_df is not None and not st.session_state.arm_rules_df.empty:
+                st.markdown("### Association Rule Mining Rules")
+                st.dataframe(st.session_state.arm_rules_df, use_container_width=True)
 
 # ==========================================================
 # REPORTS AND DOWNLOADS PAGE
@@ -969,6 +1432,22 @@ elif page == "Reports & Downloads":
                     mime="text/csv",
                 )
 
+            if st.session_state.high_risk_customer_report_df is not None:
+                st.download_button(
+                    "Download High-Risk Customer Retention Report CSV",
+                    data=dataframe_to_csv_bytes(st.session_state.high_risk_customer_report_df),
+                    file_name="high_risk_customer_retention_report.csv",
+                    mime="text/csv",
+                )
+
+            if st.session_state.arm_rules_df is not None:
+                st.download_button(
+                    "Download ARM Rules CSV",
+                    data=dataframe_to_csv_bytes(st.session_state.arm_rules_df),
+                    file_name="association_rule_mining_rules.csv",
+                    mime="text/csv",
+                )
+
             excel_output = create_excel_report()
             st.download_button(
                 "Download Excel Report",
@@ -984,6 +1463,17 @@ elif page == "Reports & Downloads":
                 file_name="DSS_All_Outputs.zip",
                 mime="application/zip",
             )
+
+        if st.session_state.high_risk_customer_report_df is not None:
+            st.markdown("### High-Risk Customer Retention Report Preview")
+            if st.session_state.high_risk_customer_report_df.empty:
+                st.info("No HIGH RISK customers were found in the final simulation output.")
+            else:
+                st.dataframe(st.session_state.high_risk_customer_report_df, use_container_width=True)
+
+        if st.session_state.arm_rules_df is not None and not st.session_state.arm_rules_df.empty:
+            st.markdown("### ARM Rules Preview")
+            st.dataframe(st.session_state.arm_rules_df, use_container_width=True)
 
         if st.session_state.iteration_df is not None:
             st.markdown("### Chart Preview")
@@ -1012,6 +1502,8 @@ elif page == "About System":
         - Classify customers as LOW RISK, MEDIUM RISK, or HIGH RISK.
         - Simulate retention interventions across several iterations.
         - Explain how customer risk changes after each intervention.
+        - Produce an ordered high-risk customer retention report.
+        - Show risk causes, most important factor, factor-based retention recommendation, and ARM rule.
         - Display tables and charts.
         - Export CSV, Excel, PNG chart, and ZIP reports.
 

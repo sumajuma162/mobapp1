@@ -8,6 +8,7 @@ import io
 import time
 import zipfile
 import warnings
+import hashlib
 from datetime import datetime
 from itertools import combinations
 import importlib.util
@@ -807,6 +808,254 @@ def get_matching_arm_rule(cause_labels, main_factor_label, arm_rules_df):
     return f"IF {main_factor_label} THEN HIGH RISK"
 
 
+def stable_choice(options, *keys):
+    """
+    Select one option in a stable but varied way.
+    This avoids repeated predictable recommendations while keeping the same customer output consistent after refresh.
+    """
+    if not options:
+        return ""
+
+    key_text = "|".join(str(key) for key in keys)
+    digest = hashlib.sha256(key_text.encode("utf-8")).hexdigest()
+    index = int(digest[:8], 16) % len(options)
+    return options[index]
+
+
+def classify_risk_urgency(risk_probability):
+    try:
+        risk_probability = float(risk_probability)
+    except Exception:
+        risk_probability = 0.0
+
+    if risk_probability >= 0.93:
+        return {
+            "level": "Critical",
+            "timeframe": "within 24 hours",
+            "tone": "immediate save action",
+            "follow_up": "follow up again within 48 hours and confirm whether the customer issue has been resolved",
+        }
+    if risk_probability >= 0.85:
+        return {
+            "level": "Very high",
+            "timeframe": "within 48 hours",
+            "tone": "priority retention action",
+            "follow_up": "follow up within 3 days and check whether the customer experience has improved",
+        }
+    return {
+        "level": "High",
+        "timeframe": "within 7 days",
+        "tone": "targeted retention action",
+        "follow_up": "follow up within one week and monitor the next usage or complaint signal",
+    }
+
+
+def get_segment_notes(row):
+    notes = []
+
+    def value_of(feature):
+        try:
+            return float(row.get(feature, 0))
+        except Exception:
+            return 0.0
+
+    if value_of("TENURE_CLASS") <= 0.5:
+        notes.append("new or low-tenure customer")
+    else:
+        notes.append("experienced customer")
+
+    if value_of("EARNINGS_CLASS") <= 0.5:
+        notes.append("price-sensitive segment")
+    else:
+        notes.append("higher-value segment")
+
+    if value_of("LOAN_BOARD_CLASS") >= 0.5:
+        notes.append("student/loan-board related segment")
+
+    return notes
+
+
+def get_factor_action_bank():
+    return {
+        "HIGH_SWITCHING_ENERGY_TIME": [
+            "assign a fast-response agent and remove unnecessary service steps",
+            "provide guided onboarding/support so the customer spends less time solving issues",
+            "create a simple one-contact resolution path with clear escalation ownership",
+            "offer proactive assistance before the customer starts comparing alternatives",
+        ],
+        "HIGH_SWITCHING_COST": [
+            "offer loyalty benefits that make staying more valuable than moving",
+            "provide renewal rewards or bonus services tied to continued usage",
+            "give a personalized retention bundle that offsets the perceived cost of staying",
+            "explain the customer's accumulated benefits and add a short-term loyalty incentive",
+        ],
+        "VALUE_FOR_MONEY": [
+            "match the customer with a better-value bundle based on usage behavior",
+            "offer a targeted discount or bonus data/minutes package",
+            "review current spending and move the customer to a more suitable plan",
+            "communicate the value received and add a limited-time value booster",
+        ],
+        "WIDE_COVERAGE": [
+            "check the customer's common service location and escalate coverage gaps",
+            "verify coverage quality and provide a practical network-support solution",
+            "open a network-quality ticket and update the customer on progress",
+            "recommend the best available service option for the customer's area",
+        ],
+        "CALL_DROPS": [
+            "prioritize technical troubleshooting for dropped calls",
+            "collect location/device details and escalate network quality investigation",
+            "give a service recovery gesture after the dropped-call issue is handled",
+            "schedule a technical follow-up to confirm call stability has improved",
+        ],
+        "STRONG_SIGNALS": [
+            "troubleshoot weak signal issues and recommend stronger coverage options",
+            "escalate persistent weak-signal areas to the network team",
+            "guide the customer through device/network setting checks",
+            "provide alternative access options while signal quality is being reviewed",
+        ],
+        "PROBLEM_SOLVING": [
+            "assign a dedicated support owner until the main problem is closed",
+            "resolve the oldest unresolved issue first and confirm satisfaction",
+            "create a clear problem-resolution timeline with status updates",
+            "escalate the case to a senior support agent for faster closure",
+        ],
+        "EXCEPTIONAL_SERVICE_EXPERIENCE": [
+            "use a service recovery call, apology, and personalized follow-up",
+            "give priority handling to rebuild trust after poor service experience",
+            "review the failed touchpoint and offer a corrective customer-care action",
+            "combine empathy-based support with a small recovery benefit",
+        ],
+        "GET_THROUGH": [
+            "provide a direct callback route instead of forcing the customer to keep calling",
+            "move the customer to WhatsApp/chat or priority support for easier access",
+            "schedule a support callback at the customer's preferred time",
+            "reduce contact friction by giving one clear channel and case reference",
+        ],
+        "DO_WHAT_THEY_SAY": [
+            "document all promises and give realistic resolution times",
+            "follow up until every promised action is completed",
+            "assign ownership for promise fulfilment and update the customer regularly",
+            "repair trust by closing pending commitments before offering a new package",
+        ],
+        "TIMELY_EFFECTIVE_COMPLAINTS": [
+            "escalate complaint resolution and shorten turnaround time",
+            "send complaint-status updates until the case is closed",
+            "prioritize the customer's complaint and confirm the final resolution",
+            "use a closed-loop complaint process with a named responsible agent",
+        ],
+        "FREE_COMPLAINTS": [
+            "make complaint channels free and simple for this customer",
+            "remove complaint barriers and provide a clear complaint-tracking path",
+            "offer a no-cost support channel and confirm the customer knows how to use it",
+            "combine free complaint access with proactive status notifications",
+        ],
+        "TENURE_CLASS": [
+            "run an early-life retention check and explain key service benefits",
+            "send onboarding guidance and a first-month loyalty incentive",
+            "educate the customer on available benefits and support channels",
+            "use a welcome-support package to prevent early churn",
+        ],
+        "EARNINGS_CLASS": [
+            "offer an affordable usage-based package",
+            "move the customer to a flexible low-cost bundle",
+            "provide a price-sensitive retention plan with clear value",
+            "recommend a package that matches the customer's financial capacity",
+        ],
+        "LOAN_BOARD_CLASS": [
+            "provide a student-friendly retention bundle",
+            "offer payment-friendly support and affordable service options",
+            "use a targeted package for the customer segment",
+            "combine affordability, education, and proactive support",
+        ],
+    }
+
+
+def create_dynamic_retention_recommendation(row, causes, arm_rule):
+    """
+    Create less predictable, more personalized recommendations.
+    The text changes based on risk probability, main factor, secondary factor, number of causes,
+    customer segment signals, and the matching ARM rule.
+    """
+    customer_id = str(row.get("CUSTOMER_ID", "CUSTOMER"))
+    risk_probability = float(row.get("Risk_Prob", 0))
+    urgency = classify_risk_urgency(risk_probability)
+    segment_notes = get_segment_notes(row)
+    action_bank = get_factor_action_bank()
+
+    if causes:
+        main_cause = causes[0]
+        main_feature = main_cause["feature"]
+        main_label = main_cause["label"]
+        secondary_label = causes[1]["label"] if len(causes) > 1 else None
+        third_label = causes[2]["label"] if len(causes) > 2 else None
+    else:
+        main_feature = "COMBINED_MODEL_SIGNALS"
+        main_label = "Combined model signals"
+        secondary_label = None
+        third_label = None
+
+    primary_action = stable_choice(
+        action_bank.get(main_feature, [
+            "make a personalized retention call and review the customer's dissatisfaction drivers",
+            "offer a targeted retention package based on the customer's risk profile",
+            "escalate the customer to a retention officer for manual review",
+        ]),
+        customer_id,
+        main_label,
+        risk_probability,
+        "primary",
+    )
+
+    if secondary_label:
+        secondary_clause_options = [
+            f"Because the profile also shows {secondary_label.lower()}, add a second action that addresses this related issue instead of using one general offer.",
+            f"Combine the main action with a secondary fix for {secondary_label.lower()} so the customer receives a balanced retention package.",
+            f"Do not treat the case as a single-factor risk; include {secondary_label.lower()} in the retention conversation.",
+        ]
+        secondary_clause = stable_choice(secondary_clause_options, customer_id, secondary_label, "secondary")
+    else:
+        secondary_clause = stable_choice([
+            "Keep the intervention focused because only one dominant driver is visible.",
+            "Use a focused retention message and avoid over-discounting where it is not necessary.",
+            "Confirm the issue directly with the customer before adding extra incentives.",
+        ], customer_id, main_label, "single")
+
+    if third_label:
+        multi_factor_clause = f"The case has multiple risk causes, including {third_label.lower()}, so it should be handled as a combined service-and-value recovery case."
+    elif len(causes) >= 2:
+        multi_factor_clause = "The case has more than one risk driver, so the retention action should solve both the main issue and the supporting dissatisfaction signal."
+    else:
+        multi_factor_clause = "The risk pattern is concentrated, so a focused intervention is suitable."
+
+    segment_clause = stable_choice([
+        f"Customer segment context: {', '.join(segment_notes)}.",
+        f"Adjust the offer to fit this profile: {', '.join(segment_notes)}.",
+        f"Use the segment signal ({', '.join(segment_notes)}) to choose the correct tone and package size.",
+    ], customer_id, *segment_notes)
+
+    arm_clause = ""
+    if arm_rule:
+        arm_clause = stable_choice([
+            "The ARM rule supports this priority, so the action should target the rule pattern rather than giving a random offer.",
+            "Since the ARM pattern links these conditions with high risk, the retention plan should directly break that pattern.",
+            "Use the ARM rule as evidence for why this customer should receive a targeted intervention.",
+        ], customer_id, arm_rule)
+
+    closing_clause = stable_choice([
+        f"Act {urgency['timeframe']}, then {urgency['follow_up']}.",
+        f"This is a {urgency['level'].lower()} risk case; complete the first contact {urgency['timeframe']} and {urgency['follow_up']}.",
+        f"Recommended priority is {urgency['tone']}: contact the customer {urgency['timeframe']} and {urgency['follow_up']}.",
+    ], customer_id, risk_probability, urgency["level"])
+
+    recommendation = (
+        f"{urgency['level']} risk customer ({risk_probability:.2%}). Main retention driver: {main_label}. "
+        f"Recommended action: {primary_action}. {secondary_clause} {multi_factor_clause} "
+        f"{segment_clause} {arm_clause} {closing_clause}"
+    )
+
+    return recommendation
+
+
 def build_high_risk_customer_report(final_data, model):
     """
     Build the ordered high-risk customer report requested by the user:
@@ -837,16 +1086,14 @@ def build_high_risk_customer_report(final_data, model):
             cause_labels = [cause["label"] for cause in causes]
             most_important = causes[0]
             most_important_label = most_important["label"]
-            recommendation = RISK_FACTOR_CONFIG[most_important["feature"]]["recommendation"]
+            recommendation = None
         else:
             cause_labels = ["Combined model signals"]
             most_important_label = "Combined model signals"
-            recommendation = (
-                "Use a personalized retention call, review the customer profile manually, "
-                "identify the strongest dissatisfaction area, and offer a targeted retention package."
-            )
+            recommendation = None
 
         arm_rule = get_matching_arm_rule(cause_labels, most_important_label, arm_rules_df)
+        recommendation = create_dynamic_retention_recommendation(row, causes, arm_rule)
 
         rows.append(
             {
